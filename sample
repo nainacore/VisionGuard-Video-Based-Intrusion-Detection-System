@@ -1,0 +1,78 @@
+import cv2
+import numpy as np
+import argparse
+import os
+ 
+ 
+def generate_sample_video(output_path, width=640, height=480, fps=25, duration=15):
+   
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+ 
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+ 
+    total_frames = fps * duration
+ 
+   
+    background = np.full((height, width, 3), 60, dtype=np.uint8)
+    
+    cv2.line(background, (0, height - 100), (width, height - 100), (80, 80, 80), 3)
+    
+    for y in range(0, height - 100, 40):
+        cv2.line(background, (0, y), (width, y), (65, 65, 65), 1)
+ 
+    
+    obj_w, obj_h = 60, 120
+    obj_y = height - 100 - obj_h  # sits on the floor line
+ 
+    print(f"[INFO] Generating sample video: {output_path}")
+    print(f"[INFO] {width}x{height} @ {fps}fps, {duration}s ({total_frames} frames)")
+ 
+    for i in range(total_frames):
+        frame = background.copy()
+ 
+      
+        progress = i / total_frames
+        obj_x = int(-obj_w + (width + obj_w * 2) * progress)
+ 
+       
+        cv2.rectangle(frame, (obj_x, obj_y), (obj_x + obj_w, obj_y + obj_h), (200, 200, 200), -1)
+       
+        head_cx = obj_x + obj_w // 2
+        cv2.circle(frame, (head_cx, obj_y - 20), 18, (200, 200, 200), -1)
+ 
+       
+        shadow_pts = np.array([
+            [obj_x + 5, obj_y + obj_h],
+            [obj_x + obj_w - 5, obj_y + obj_h],
+            [obj_x + obj_w + 15, obj_y + obj_h + 10],
+            [obj_x - 10, obj_y + obj_h + 10],
+        ], dtype=np.int32)
+        cv2.fillPoly(frame, [shadow_pts], (40, 40, 40))
+ 
+   
+        cv2.putText(frame, f"SAMPLE FOOTAGE  frame {i+1}/{total_frames}",
+                    (10, height - 10), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.4, (120, 120, 120), 1, cv2.LINE_AA)
+ 
+        writer.write(frame)
+ 
+    writer.release()
+    print(f"[DONE] Saved to {output_path}")
+    print(f"\nSuggested ROI for this video:")
+    print(f"  --roi 200 200 240 200")
+    print(f"  (The moving object will cross through this zone.)")
+ 
+ 
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Generate a synthetic test video for VisionGuard")
+    parser.add_argument("--output", default="sample_data/test_video.mp4",
+                        help="Output path for the generated video")
+    parser.add_argument("--width",    type=int, default=640)
+    parser.add_argument("--height",   type=int, default=480)
+    parser.add_argument("--fps",      type=int, default=25)
+    parser.add_argument("--duration", type=int, default=15,
+                        help="Video duration in seconds")
+    args = parser.parse_args()
+    generate_sample_video(args.output, args.width, args.height, args.fps, args.duration)
+ 
