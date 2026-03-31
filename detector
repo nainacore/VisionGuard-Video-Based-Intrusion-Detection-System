@@ -1,0 +1,192 @@
+import cv2
+import numpy as np
+import argparse
+import os
+import csv
+from datetime import datetime
+ 
+from utils import (
+    draw_roi,
+    draw_bounding_boxes,
+    draw_hud,
+    is_inside_roi,
+    save_snapshot,
+    log_intrusion,
+)
+ 
+ 
+def build_background_subtractor(history=500, threshold=50):
+    return cv2.createBackgroundSubtractorMOG2(
+        history=history,
+        varThreshold=threshold,
+        detectShadows=True,
+    )
+ 
+ 
+def extract_contours(fg_mask, min_area=800):
+   
+ 
+    _, binary = cv2.threshold(fg_mask, 200, 255, cv2.THRESH_BINARY)
+ 
+  
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    cleaned = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=2)
+    cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, kernel, iterations=1)
+ 
+    contours, _ = cv2.findContours(
+        cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+ 
+    return [c for c in contours if cv2.contourArea(c) >= min_area]
+ 
+ 
+def run_detection(args):
+   
+    cap = cv2.VideoCapture(args.input)
+    if not cap.isOpened():
+        raise FileNotFoundError(f"Cannot open video: {args.input}")
+ 
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+ 
+    print(f"[INFO] Input : {args.input}")
+    print(f"[INFO] Resolution: {width}x{height}  FPS: {fps:.1f}  Frames: {total_frames}")
+ 
+
+    roi = tuple(args.roi)  # (x, y, w, h)
+    print(f"[INFO] ROI   : x={roi[0]}, y={roi[1]}, w={roi[2]}, h={roi[3]}")
+ 
+  
+    os.makedirs(args.output_dir, exist_ok=True)
+    os.makedirs(os.path.join(args.output_dir, "snapshots"), exist_ok=True)
+ 
+    video_out_path = os.path.join(args.output_dir, "annotated_output.mp4")
+    log_path = os.path.join(args.output_dir, "intrusion_log.csv")
+ 
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(video_out_path, fourcc, fps, (width, height))
+ 
+
+    with open(log_path, "w", newline="") as f:
+        csv.writer(f).writerow(["frame", "timestamp", "num_detections", "snapshot"])
+ 
+
+    subtractor = build_background_subtractor(
+        history=args.history, threshold=args.threshold
+    )
+ 
+    frame_idx = 0
+    intrusion_count = 0
+    cooldown_frames = 0  # Frames to wait before logging the next event
+ 
+    print("[INFO] Processing — press Ctrl+C to stop early.\n")
+ 
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+ 
+        frame_idx += 1
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+ 
+
+        fg_mask = subtractor.apply(frame)
+        contours = extract_contours(fg_mask, min_area=args.min_area)
+ 
+
+        intruding = []
+        for cnt in contours:
+            x, y, w, h = cv2.boundingRect(cnt)
+            if is_inside_roi((x, y, w, h), roi, overlap_threshold=args.overlap):
+                intruding.append((x, y, w, h))
+ 
+        alert = len(intruding) > 0
+ 
+      
+        annotated = frame.copy()
+        draw_roi(annotated, roi, alert=alert)
+        draw_bounding_boxes(annotated, intruding)
+        draw_hud(annotated, frame_idx, total_frames, intrusion_count, alert)
+ 
+        if alert and cooldown_frames == 0:
+            intrusion_count += 1
+            snap_name = f"intrusion_{frame_idx:06d}.jpg"
+            snap_path = os.path.join(args.output_dir, "snapshots", snap_name)
+            save_snapshot(annotated, snap_path)
+            log_intrusion(log_path, frame_idx, timestamp, len(intruding), snap_name)
+            cooldown_frames = int(fps * args.cooldown)  # cooldown in seconds
+ 
+            print(
+                f"[ALERT] Frame {frame_idx:5d} | {len(intruding)} object(s) in ROI "
+                f"| snapshot: {snap_name}"
+            )
+ 
+        if cooldown_frames > 0:
+            cooldown_frames -= 1
+ 
+      
+        writer.write(annotated)
+ 
+      
+        if frame_idx % 100 == 0:
+            pct = (frame_idx / total_frames * 100) if total_frames else 0
+            print(f"[INFO] Frame {frame_idx}/{total_frames} ({pct:.0f}%)")
+ 
+
+    cap.release()
+    writer.release()
+ 
+    print(f"\n[DONE] Processed {frame_idx} frames.")
+    print(f"[DONE] Total intrusion events : {intrusion_count}")
+    print(f"[DONE] Annotated video        : {video_out_path}")
+    print(f"[DONE] Intrusion log          : {log_path}")
+    print(f"[DONE] Snapshots              : {os.path.join(args.output_dir, 'snapshots')}/")
+ 
+ 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="VisionGuard — Video-Based Intrusion Detection System",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--input", required=True,
+        help="Path to input video file (e.g. footage.mp4)"
+    )
+    parser.add_argument(
+        "--roi", nargs=4, type=int, required=True,
+        metavar=("X", "Y", "W", "H"),
+        help="Region of Interest as: X Y Width Height (pixels)"
+    )
+    parser.add_argument(
+        "--output-dir", default="output",
+        help="Directory for annotated video, log, and snapshots (default: output/)"
+    )
+    parser.add_argument(
+        "--min-area", type=int, default=800,
+        help="Minimum contour area in pixels to count as motion (default: 800)"
+    )
+    parser.add_argument(
+        "--threshold", type=int, default=50,
+        help="MOG2 variance threshold — higher = less sensitive (default: 50)"
+    )
+    parser.add_argument(
+        "--history", type=int, default=500,
+        help="Frames used to build background model (default: 500)"
+    )
+    parser.add_argument(
+        "--overlap", type=float, default=0.3,
+        help="Minimum IoU overlap with ROI to trigger alert (default: 0.3)"
+    )
+    parser.add_argument(
+        "--cooldown", type=float, default=3.0,
+        help="Seconds between consecutive alert logs (default: 3.0)"
+    )
+    return parser.parse_args()
+ 
+ 
+if __name__ == "__main__":
+    args = parse_args()
+    run_detection(args)
+ 
