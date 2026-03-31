@@ -1,0 +1,105 @@
+import cv2
+import csv
+import os
+import numpy as np
+ 
+
+COLOR_ROI_NORMAL  = (0, 200, 0)      # Green when no intrusion
+COLOR_ROI_ALERT   = (0, 0, 220)      # Red when intrusion detected
+COLOR_BOX         = (0, 165, 255)    # Orange for detected object boxes
+COLOR_HUD_BG      = (20, 20, 20)     # Dark HUD background
+COLOR_TEXT_NORMAL = (220, 220, 220)  # Light grey text
+COLOR_TEXT_ALERT  = (0, 80, 255)     # Red alert text
+ 
+ 
+def draw_roi(frame, roi, alert=False):
+   
+    x, y, w, h = roi
+    color = COLOR_ROI_ALERT if alert else COLOR_ROI_NORMAL
+ 
+    overlay = frame.copy()
+    alpha = 0.12
+    cv2.rectangle(overlay, (x, y), (x + w, y + h), color, -1)
+    cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
+ 
+ 
+    cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+ 
+    label = "RESTRICTED ZONE"
+    cv2.putText(
+        frame, label, (x + 6, y + 22),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2, cv2.LINE_AA,
+    )
+ 
+ 
+def draw_bounding_boxes(frame, boxes):
+  
+    for i, (x, y, w, h) in enumerate(boxes):
+        cv2.rectangle(frame, (x, y), (x + w, y + h), COLOR_BOX, 2)
+        cv2.putText(
+            frame, f"Object {i + 1}", (x, max(y - 8, 10)),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_BOX, 2, cv2.LINE_AA,
+        )
+ 
+ 
+def draw_hud(frame, frame_idx, total_frames, intrusion_count, alert):
+    
+    cv2.rectangle(frame, (0, 0), (280, 60), COLOR_HUD_BG, -1)
+ 
+    frame_text = f"Frame: {frame_idx}/{total_frames}"
+    event_text = f"Events: {intrusion_count}"
+    cv2.putText(frame, frame_text, (8, 20),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, COLOR_TEXT_NORMAL, 1, cv2.LINE_AA)
+    cv2.putText(frame, event_text, (8, 45),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, COLOR_TEXT_NORMAL, 1, cv2.LINE_AA)
+ 
+   
+    if alert:
+        h, w = frame.shape[:2]
+        cv2.rectangle(frame, (w - 180, 0), (w, 40), (0, 0, 180), -1)
+        cv2.putText(frame, "!! ALERT !!", (w - 170, 28),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+ 
+ 
+def is_inside_roi(box, roi, overlap_threshold=0.3):
+   
+    bx, by, bw, bh = box
+    rx, ry, rw, rh = roi
+ 
+    # Intersection rectangle
+    ix1 = max(bx, rx)
+    iy1 = max(by, ry)
+    ix2 = min(bx + bw, rx + rw)
+    iy2 = min(by + bh, ry + rh)
+ 
+    if ix2 <= ix1 or iy2 <= iy1:
+        return False
+ 
+    intersection = (ix2 - ix1) * (iy2 - iy1)
+    box_area = bw * bh
+ 
+    if box_area == 0:
+        return False
+ 
+    return (intersection / box_area) >= overlap_threshold
+ 
+ 
+def save_snapshot(frame, path):
+
+    cv2.imwrite(path, frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
+ 
+ 
+def log_intrusion(csv_path, frame_idx, timestamp, num_detections, snapshot_name):
+ 
+    with open(csv_path, "a", newline="") as f:
+        csv.writer(f).writerow([frame_idx, timestamp, num_detections, snapshot_name])
+ 
+ 
+def resize_frame(frame, target_width=960):
+  
+    h, w = frame.shape[:2]
+    if w <= target_width:
+        return frame
+    scale = target_width / w
+    return cv2.resize(frame, (target_width, int(h * scale)), interpolation=cv2.INTER_AREA)
+ 
